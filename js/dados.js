@@ -38,7 +38,7 @@ function estadoNovo() {
       intervalo: 30,
       sinalPadrao: 30,
       pagamentoPadrao: 'pix',
-      abrirWhats: 'business',
+      abrirWhats: 'whatsapp',
       mensagens: { ...MENSAGENS_PADRAO },
     },
     servicos: [],

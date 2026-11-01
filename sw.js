@@ -1,5 +1,5 @@
 // Guarda o app no iPhone para abrir sem internet. Ao publicar mudança, suba a VERSAO.
-const VERSAO = 'agenda-v1.1.0';
+const VERSAO = 'agenda-v1.1.1';
 const FONTES = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
 const ARQUIVOS = [
   './',

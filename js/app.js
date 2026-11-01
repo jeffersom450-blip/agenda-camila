@@ -1,7 +1,7 @@
 import * as D from './dados.js';
 import { montarMensagem, abrirWhats, VARIAVEIS } from './whatsapp.js';
 
-const VERSAO = '1.1.0';
+const VERSAO = '1.1.1';
 
 // ---------- utilidades ----------
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -381,10 +381,29 @@ function distribuirColunas(itens) {
 function enviar(tipo, a) {
   const c = D.clientePorId(a.clienteId);
   if (!c?.telefone) { avisar('Essa cliente está sem telefone'); return; }
-  abrirWhats(c.telefone, tipo ? montarMensagem(tipo, a) : '');
+  abrirWhats(c.telefone, tipo ? montarMensagem(tipo, a) : '', folhaNaoAbriu);
   if (tipo === 'lembrete') a.lembreteEnviado = true;
   if (tipo === 'confirmacao') a.confirmacaoEnviada = true;
   if (tipo) { D.salvar(); setTimeout(render, 400); }
+}
+
+// plano B quando o app do WhatsApp não abre: link wa.me tocado por ela (o iPhone escolhe o app)
+function folhaNaoAbriu(link, texto) {
+  const folha = abrirFolha({ titulo: 'O WhatsApp não abriu' });
+  folha.corpo.append(el('<p style="margin-top:4px">Toque no botão abaixo para abrir a conversa pelo link do WhatsApp.</p>'));
+  const ir = el(`<a class="btn-principal whats" href="${esc(link)}" target="_blank" rel="noopener" style="text-decoration:none">${IC.whats}Abrir pelo link</a>`);
+  ir.onclick = () => setTimeout(folha.fechar, 300);
+  folha.corpo.append(ir);
+  if (texto) {
+    const copiar = el('<button class="btn-texto">Copiar a mensagem</button>');
+    copiar.onclick = async () => { try { await navigator.clipboard.writeText(texto); avisar('Mensagem copiada'); } catch { avisar('Não deu para copiar'); } };
+    folha.corpo.append(copiar);
+  }
+  if (D.estado.config.abrirWhats !== 'link') {
+    const sempre = el('<button class="btn-texto">Usar sempre o link</button>');
+    sempre.onclick = () => { D.estado.config.abrirWhats = 'link'; D.salvar(); folha.fechar(); avisar('Pronto: as mensagens vão abrir pelo link'); };
+    folha.corpo.append(sempre);
+  }
 }
 
 // ---------- novo / editar agendamento ----------
@@ -798,7 +817,7 @@ function folhaCliente(c) {
         <button class="btn-whats" data-w>${IC.whats}Whats</button></div>
       <div class="linha">${IC.cofre}<div class="grow"><div class="t1">${saldo.valor > 0 ? `Sinal com você: ${D.dinheiro(saldo.valor)}` : 'Nenhum sinal guardado'}</div>${saldo.valor > 0 ? `<div class="t2">Desde ${D.dataCurta(saldo.desde)}</div>` : ''}</div></div>
     </div>`);
-    topoC.querySelector('[data-w]').onclick = () => abrirWhats(c.telefone);
+    topoC.querySelector('[data-w]').onclick = () => abrirWhats(c.telefone, '', folhaNaoAbriu);
     corpo.append(topoC);
     if (saldo.valor > 0) {
       const s = el(`<div class="acoes-cliente"><button class="btn-sec" data-s="devolvido">Devolvi o sinal</button><button class="btn-sec" data-s="retido">Fiquei com o sinal</button></div>`);
@@ -976,9 +995,8 @@ function telaAjustes(app) {
       <div class="campo"><label>Pagamento padrão</label><select class="entrada" data-c="pagamentoPadrao">${Object.entries(D.PAGAMENTOS).map(([k, n]) => `<option value="${k}" ${k === cfg.pagamentoPadrao ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     </div>
     <div class="campo"><label>Abrir mensagens no</label><select class="entrada" data-c="abrirWhats">
-      <option value="whatsapp" ${cfg.abrirWhats === 'whatsapp' ? 'selected' : ''}>WhatsApp</option>
-      <option value="business" ${cfg.abrirWhats === 'business' ? 'selected' : ''}>WhatsApp Business</option>
-      <option value="link" ${cfg.abrirWhats === 'link' ? 'selected' : ''}>Link wa.me (pelo navegador)</option>
+      <option value="whatsapp" ${cfg.abrirWhats !== 'link' ? 'selected' : ''}>App do WhatsApp (comum ou Business)</option>
+      <option value="link" ${cfg.abrirWhats === 'link' ? 'selected' : ''}>Link wa.me (passa pelo navegador)</option>
     </select></div>
   </div>`));
   tela.querySelectorAll('[data-c]').forEach((x) => (x.onchange = () => {

@@ -42,14 +42,14 @@ export function numeroWhats(telefone) {
   return d;
 }
 
-export function abrirWhats(telefone, texto = '') {
+// naoAbriu(link) é chamado quando o app do WhatsApp não abre (a tela continua visível)
+export function abrirWhats(telefone, texto = '', naoAbriu) {
   const n = numeroWhats(telefone);
   const t = encodeURIComponent(texto);
+  const link = `https://wa.me/${n}${t ? '?text=' + t : ''}`;
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  let url;
-  if (ios && estado.config.abrirWhats === 'whatsapp') url = `whatsapp://send?phone=${n}${t ? '&text=' + t : ''}`;
-  else if (ios && estado.config.abrirWhats === 'business') url = `whatsapp-business://send?phone=${n}${t ? '&text=' + t : ''}`;
-  else url = `https://wa.me/${n}${t ? '?text=' + t : ''}`;
-  if (url.startsWith('https:')) window.open(url, '_blank');
-  else window.location.href = url;
+  if (!ios || estado.config.abrirWhats === 'link') { window.open(link, '_blank'); return; }
+  // no iPhone o WhatsApp e o WhatsApp Business atendem o mesmo endereço whatsapp://
+  window.location.href = `whatsapp://send?phone=${n}${t ? '&text=' + t : ''}`;
+  setTimeout(() => { if (!document.hidden) naoAbriu?.(link, texto); }, 1500);
 }
