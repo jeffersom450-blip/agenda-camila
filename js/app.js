@@ -1,7 +1,7 @@
 import * as D from './dados.js';
 import { montarMensagem, abrirWhats, VARIAVEIS } from './whatsapp.js';
 
-const VERSAO = '1.1.1';
+const VERSAO = '1.2.0';
 
 // ---------- utilidades ----------
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -77,7 +77,7 @@ function ir(nova) {
 function render() {
   const app = document.getElementById('app');
   app.replaceChildren();
-  ({ mes: telaMes, dia: telaDia, clientes: telaClientes, servicos: telaServicos, mensagens: telaMensagens, ajustes: telaAjustes }[rota.tela] || telaMes)(app);
+  ({ mes: telaMes, dia: telaDia, clientes: telaClientes, servicos: telaServicos, mensagens: telaMensagens, ajustes: telaAjustes, fiado: telaFiado, financeiro: telaFinanceiro, gastos: telaGastos }[rota.tela] || telaMes)(app);
 }
 
 function topo({ titulo, sub = '', esquerda = 'menu', direita = '' }) {
@@ -95,16 +95,17 @@ function abrirMenu() {
     ['mes', 'Agenda', IC.agenda],
     ['clientes', 'Clientes', IC.pessoas],
     ['servicos', 'Serviços', IC.unha],
+    ['fiado', 'Fiado', IC.fiado],
+    ['financeiro', 'Financeiro', IC.grafico],
+    ['gastos', 'Gastos do estúdio', IC.sacola],
     ['mensagens', 'Mensagens', IC.balao],
     ['ajustes', 'Ajustes', IC.engrenagem],
   ];
-  const breve = [['Fiado', IC.fiado], ['Financeiro', IC.grafico], ['Gastos do estúdio', IC.sacola]];
+  const cobrar = D.fiadosParaCobrar().length;
   const fundo = el('<div class="menu-fundo"></div>');
   const menu = el(`<nav class="menu">
     <div class="ola">Olá, ${esc(D.estado.config.nomeEstudio.split(' ')[0])}<small>${esc(D.estado.config.nomeEstudio)}</small></div>
-    ${itens.map(([k, n, i]) => `<button data-ir="${k}" class="${(rota.tela === k || (k === 'mes' && rota.tela === 'dia')) ? 'ativo' : ''}">${i}${n}</button>`).join('')}
-    <div style="height:10px"></div>
-    ${breve.map(([n, i]) => `<button disabled>${i}${n}<em>em breve</em></button>`).join('')}
+    ${itens.map(([k, n, i]) => `<button data-ir="${k}" class="${(rota.tela === k || (k === 'mes' && rota.tela === 'dia')) ? 'ativo' : ''}">${i}${n}${k === 'fiado' && cobrar ? `<em class="alerta">${cobrar} p/ cobrar</em>` : ''}</button>`).join('')}
   </nav>`);
   document.body.append(fundo, menu);
   requestAnimationFrame(() => { fundo.classList.add('aberto'); menu.classList.add('aberto'); });
@@ -154,7 +155,6 @@ function abrirFolha({ titulo, esquerda = 'Fechar', direita = '', aoFechar }) {
 function telaMes(app) {
   const { ano, mes } = rota;
   const hoje = D.hojeStr();
-  const marcados = D.resumoDoMes(ano, mes);
 
   app.append(topo({ titulo: 'Agenda', direita: '<button class="pilula" data-hoje>Hoje</button>' }));
   app.querySelector('[data-hoje]').onclick = () => { const d = new Date(); ir({ tela: 'dia', dia: D.hojeStr(), ano: d.getFullYear(), mes: d.getMonth() }); };
@@ -170,10 +170,12 @@ function telaMes(app) {
   for (let i = 0; i < semanas * 7; i++) {
     const d = new Date(inicio); d.setDate(inicio.getDate() + i);
     const s = D.strDeData(d);
-    const n = marcados.get(s) || 0;
+    const doDia = D.agendamentosDoDia(s).filter((a) => a.status !== 'cancelado');
+    const n = doDia.length;
     const bloqDia = D.bloqueiosDoDia(s).some((b) => b.diaInteiro);
     const cls = ['dia', d.getMonth() !== mes && 'fora', s === hoje && 'hoje', bloqDia && 'bloq'].filter(Boolean).join(' ');
-    const marcas = n ? (n <= 3 ? '<i></i>'.repeat(n) : '<i></i><i></i><b>+</b>') : '';
+    const bolinha = (a) => { const h = D.corDoAgendamento(a); return h == null ? '<i></i>' : `<i style="background:${D.corServico(h).borda}"></i>`; };
+    const marcas = n ? (n <= 3 ? doDia.map(bolinha).join('') : doDia.slice(0, 2).map(bolinha).join('') + '<b>+</b>') : '';
     dias += `<button class="${cls}" data-dia="${s}" aria-label="${D.dataLonga(s)}${n ? `, ${n} atendimento(s)` : ''}"><span>${d.getDate()}</span><span class="marcas">${marcas}</span></button>`;
   }
   const cal = el(`<section class="cal">
@@ -205,6 +207,15 @@ function telaMes(app) {
     const d = el(`<div class="dica"><strong>Faça uma cópia de segurança</strong>${D.estado.ultimoBackup ? 'A última foi há mais de 7 dias.' : 'Você ainda não fez nenhuma.'}<br><button class="pilula" style="margin-top:8px">Fazer backup agora</button></div>`);
     d.querySelector('button').onclick = exportarBackup;
     tela.append(d);
+  }
+
+  // fiado vencido ou vencendo hoje
+  const paraCobrar = D.fiadosParaCobrar();
+  if (paraCobrar.length) {
+    tela.append(el('<h3 class="secao-titulo">Cobrar fiado</h3>'));
+    const lista = el('<div class="cartao"></div>');
+    for (const a of paraCobrar) lista.append(linhaFiado(a));
+    tela.append(lista);
   }
 
   // lembretes: hoje e amanhã ainda não confirmados
@@ -243,13 +254,19 @@ function linhaAgendamento(a, mostrarData = false) {
   const c = D.clientePorId(a.clienteId);
   const st = a.status && a.status !== 'nenhum' ? `<span class="etiqueta ${corStatus(a.status)}">${D.STATUS[a.status]}</span>` : '';
   const b = el(`<button class="linha">
-    <div class="hora">${mostrarData ? D.dataCurta(a.data) + '<br>' : ''}${D.hora(a.inicio)}</div>
+    ${tracoCor(a)}<div class="hora">${mostrarData ? D.dataCurta(a.data) + '<br>' : ''}${D.hora(a.inicio)}</div>
     <div class="grow"><div class="t1">${esc(c?.nome || 'Cliente')}</div><div class="t2">${esc(a.servicos.map((s) => s.nome).join(', '))} · ${D.dinheiro(a.total)}</div></div>
     ${st}<span class="seta">${IC.seta}</span>
   </button>`);
   b.querySelector('.seta svg').style.cssText = 'width:18px;height:18px';
   b.onclick = () => folhaDetalhe(a);
   return b;
+}
+
+// tracinho vertical na cor do serviço
+function tracoCor(a) {
+  const h = D.corDoAgendamento(a);
+  return `<i class="traco" style="background:${h == null ? 'var(--bege)' : D.corServico(h).borda}"></i>`;
 }
 
 const corStatus = (s) => ({ confirmado: 'ok', aconfirmar: 'alerta', atrasou: 'alerta', faltou: 'perigo', cancelado: '' }[s] || '');
@@ -335,6 +352,13 @@ function telaDia(app) {
         <strong>${esc(c?.nome || 'Cliente')}</strong>
         <span class="meta">${esc(a.servicos.map((x) => x.nome).join(', '))}</span>
       </button>`);
+      const h = D.corDoAgendamento(a);
+      if (h != null) {
+        const cor = D.corServico(h);
+        bloco.style.setProperty('--sv-fundo', cor.fundo);
+        bloco.style.setProperty('--sv-borda', cor.borda);
+        bloco.style.setProperty('--sv-texto', cor.texto);
+      }
       bloco.onclick = () => folhaDetalhe(a);
     }
     bloco.style.top = alt(it.ini - ini) + 1 + 'px';
@@ -384,6 +408,7 @@ function enviar(tipo, a) {
   abrirWhats(c.telefone, tipo ? montarMensagem(tipo, a) : '', folhaNaoAbriu);
   if (tipo === 'lembrete') a.lembreteEnviado = true;
   if (tipo === 'confirmacao') a.confirmacaoEnviada = true;
+  if (tipo === 'cobranca' && a.fiado) a.fiado.cobradoEm = D.hojeStr();
   if (tipo) { D.salvar(); setTimeout(render, 400); }
 }
 
@@ -507,16 +532,17 @@ function folhaNovo({ data, inicio, ag, aoSalvar }) {
       const todos = [...D.estado.servicos, ...extras];
       const fichas = el('<div class="fichas"></div>');
       for (const s of todos) {
-        const b = el(`<button class="ficha ${sel.has(s.id) ? 'sel' : ''}">${esc(s.nome)}<small>${D.dinheiro(s.valor)}</small></button>`);
+        const h = D.estado.servicos.find((x) => x.id === s.id)?.cor ?? s.cor;
+        const b = el(`<button class="ficha ${sel.has(s.id) ? 'sel' : ''}">${h != null ? `<i class="pt" style="background:${D.corServico(h).borda}"></i>` : ''}${esc(s.nome)}<small>${D.dinheiro(s.valor)}</small></button>`);
         b.onclick = () => {
           if (sel.has(s.id)) f.servicos = f.servicos.filter((x) => x.id !== s.id);
-          else f.servicos.push({ id: s.id, nome: s.nome, valor: s.valor, duracao: s.duracao });
+          else f.servicos.push({ id: s.id, nome: s.nome, valor: s.valor, duracao: s.duracao, cor: s.cor });
           recalcular(); desenharServicos(); validar();
         };
         fichas.append(b);
       }
       const novo = el('<button class="ficha mais">+ Novo serviço</button>');
-      novo.onclick = () => folhaServico(null, (s) => { f.servicos.push({ id: s.id, nome: s.nome, valor: s.valor, duracao: s.duracao }); recalcular(); desenharServicos(); validar(); });
+      novo.onclick = () => folhaServico(null, (s) => { f.servicos.push({ id: s.id, nome: s.nome, valor: s.valor, duracao: s.duracao, cor: s.cor }); recalcular(); desenharServicos(); validar(); });
       fichas.append(novo);
       secServ.append(fichas);
       const det = el(`<div class="duas" style="margin-top:12px">
@@ -570,6 +596,12 @@ function folhaNovo({ data, inicio, ag, aoSalvar }) {
         fichas.append(b);
       }
       secPag.append(fichas);
+      if (f.pagamento === 'fiado') {
+        f.fiado = f.fiado || { vence: D.somarDias(f.data, 30) };
+        const v = el(`<div class="campo" style="margin:12px 0 0"><label>Ela vai pagar em</label><input class="entrada" type="date" value="${f.fiado.vence}"></div>`);
+        v.querySelector('input').onchange = (e) => { if (e.target.value) f.fiado.vence = e.target.value; };
+        secPag.append(v, el('<div class="t2" style="color:var(--texto-2);font-size:13px;margin:6px 2px 0">Nesse dia aparece o lembrete para cobrar.</div>'));
+      }
     }
 
     function faltando() {
@@ -741,10 +773,11 @@ function folhaDetalhe(a) {
     const pg = el('<div class="fichas"></div>');
     for (const [k, n] of Object.entries(D.PAGAMENTOS)) {
       const b = el(`<button class="ficha ${a.pagamento === k ? 'sel' : ''}">${n.replace(' / Transferência', '')}</button>`);
-      b.onclick = () => { a.pagamento = k; D.salvarAgendamento(a); desenhar(); };
+      b.onclick = () => { a.pagamento = k; D.salvarAgendamento(a); desenhar(); render(); };
       pg.append(b);
     }
     corpo.append(pg);
+    if (a.fiado) corpo.append(cartaoFiado(a, () => { desenhar(); render(); }));
 
     corpo.append(el('<h3 class="secao-titulo">Observação</h3>'));
     const obs = el(`<textarea class="entrada" placeholder="Escreva uma observação">${esc(a.obs)}</textarea>`);
@@ -883,11 +916,30 @@ function folhaServico(s, aoSalvar) {
     </div>
   </div>`));
   const q = (k) => folha.corpo.querySelector(`[data-c=${k}]`);
+  let cor = s?.cor ?? D.novaCor();
+  const secCor = el('<div class="campo"><span class="rotulo">Cor na agenda</span><div class="cores"></div></div>');
+  const desenharCores = () => {
+    const box = secCor.querySelector('.cores');
+    box.innerHTML = '';
+    const tons = [0, 25, 45, 90, 140, 170, 200, 225, 260, 290, 320, 345];
+    if (!tons.includes(cor)) tons.unshift(cor);
+    for (const h of tons) {
+      const c = D.corServico(h);
+      const b = el(`<button class="cor ${h === cor ? 'sel' : ''}" aria-label="Cor" style="background:${c.fundo};border-color:${c.borda};color:${c.texto}">Aa</button>`);
+      b.onclick = () => { cor = h; desenharCores(); };
+      box.append(b);
+    }
+    const sortear = el('<button class="pilula">Sortear</button>');
+    sortear.onclick = () => { cor = D.novaCor(D.estado.servicos.filter((x) => x.id !== s?.id).map((x) => x.cor)); desenharCores(); };
+    box.append(sortear);
+  };
+  desenharCores();
+  folha.corpo.append(secCor);
   const ok = el('<button class="btn-principal">Salvar</button>');
   ok.onclick = () => {
     const nome = q('nome').value.trim();
     if (!nome) { avisar('Escreva o nome do serviço'); return; }
-    const novo = { id: s?.id || D.uid(), nome, valor: Number(q('valor').value.replace(/\./g, '').replace(',', '.')) || 0, duracao: Number(q('dur').value) };
+    const novo = { id: s?.id || D.uid(), nome, valor: Number(q('valor').value.replace(/\./g, '').replace(',', '.')) || 0, duracao: Number(q('dur').value), cor };
     const i = D.estado.servicos.findIndex((x) => x.id === novo.id);
     if (i >= 0) D.estado.servicos[i] = novo; else D.estado.servicos.push(novo);
     D.salvar();
@@ -910,11 +962,12 @@ function telaServicos(app) {
   const lista = el('<div class="cartao"></div>');
   if (!D.estado.servicos.length) lista.append(el('<div class="vazio">Nenhum serviço ainda. Toque em + para cadastrar.</div>'));
   for (const s of D.estado.servicos) {
-    const l = el(`<button class="linha"><div class="grow"><div class="t1">${esc(s.nome)}</div><div class="t2">${D.duracaoTexto(s.duracao)}</div></div><strong>${D.dinheiro(s.valor)}</strong></button>`);
+    const c = D.corServico(s.cor ?? 40);
+    const l = el(`<button class="linha"><span class="amostra" style="background:${c.fundo};border-color:${c.borda}"></span><div class="grow"><div class="t1">${esc(s.nome)}</div><div class="t2">${D.duracaoTexto(s.duracao)}</div></div><strong>${D.dinheiro(s.valor)}</strong></button>`);
     l.onclick = () => folhaServico(s, () => render());
     lista.append(l);
   }
-  tela.append(lista, el('<p style="color:var(--texto-2);font-size:14px;margin:12px 4px">No agendamento você pode escolher mais de um serviço: o app soma o valor e o tempo.</p>'));
+  tela.append(lista, el('<p style="color:var(--texto-2);font-size:14px;margin:12px 4px">No agendamento você pode escolher mais de um serviço: o app soma o valor e o tempo. Na agenda, o horário aparece na cor do primeiro serviço.</p>'));
   app.append(tela);
 }
 
@@ -923,7 +976,7 @@ const NOMES_MSG = { confirmacao: 'Confirmação de agendamento', lembrete: 'Lemb
 
 function exemploAgendamento() {
   const c = { id: '_ex', nome: 'Marina Fontoura', telefone: '', sinais: [{ tipo: 'recebido', valor: D.estado.config.sinalPadrao, data: D.hojeStr() }] };
-  return { c, a: { clienteId: '_ex', data: D.somarDias(D.hojeStr(), 1), inicio: 14 * 60, servicos: [{ nome: 'Aplicação de alongamento' }, { nome: 'Esmaltação' }], total: 180 } };
+  return { c, a: { clienteId: '_ex', data: D.somarDias(D.hojeStr(), 1), inicio: 14 * 60, servicos: [{ nome: 'Aplicação de alongamento' }, { nome: 'Esmaltação' }], total: 180, fiado: { vence: D.somarDias(D.hojeStr(), 31) } } };
 }
 
 // mostra *negrito* e _itálico_ como o WhatsApp mostra
@@ -944,7 +997,7 @@ function telaMensagens(app) {
   app.append(topo({ titulo: 'Mensagens' }));
   const tela = el('<main class="tela"><p style="color:var(--texto-2);font-size:14px;margin:4px 4px 12px">O nome, a data, o horário e os serviços entram sozinhos. Toque para editar o texto.</p></main>');
   for (const tipo of Object.keys(NOMES_MSG)) {
-    tela.append(el(`<h3 class="secao-titulo">${NOMES_MSG[tipo]}${tipo === 'cobranca' ? ' · em breve' : ''}</h3>`));
+    tela.append(el(`<h3 class="secao-titulo">${NOMES_MSG[tipo]}</h3>`));
     const b = el(`<button class="cartao" style="display:block;width:100%;text-align:left;padding:10px"><div class="previa">${comoWhats(previa(tipo, D.estado.config.mensagens[tipo]))}</div></button>`);
     b.onclick = () => folhaModelo(tipo);
     tela.append(b);
@@ -973,6 +1026,240 @@ function folhaModelo(tipo) {
   ok.onclick = salvarModelo;
   folha.corpo.append(txt, el('<span class="rotulo" style="margin-top:10px">Toque para inserir:</span>'), vars, el('<span class="rotulo" style="margin-top:14px">Como a cliente vai receber:</span>'), pv, ok, restaurar);
   atualizar();
+}
+
+// ---------- fiado ----------
+function situacaoFiado(a) {
+  if (a.fiado.pagoEm) return { txt: `Recebido em ${D.dataCurta(a.fiado.pagoEm)}`, cls: 'ok' };
+  const dias = Math.round((D.dataDeStr(D.hojeStr()) - D.dataDeStr(a.fiado.vence)) / 864e5);
+  if (dias === 0) return { txt: 'Vence hoje', cls: 'alerta' };
+  if (dias > 0) return { txt: `Venceu há ${dias} dia${dias > 1 ? 's' : ''}`, cls: 'perigo' };
+  return { txt: `Vence ${D.dataCurta(a.fiado.vence)}`, cls: '' };
+}
+
+function linhaFiado(a) {
+  const c = D.clientePorId(a.clienteId);
+  const st = situacaoFiado(a);
+  const cobradoHoje = a.fiado.cobradoEm === D.hojeStr();
+  const l = el(`<div class="linha">
+    ${tracoCor(a)}
+    <div class="grow"><div class="t1">${esc(c?.nome || 'Cliente')} · ${D.dinheiro(a.total)}</div><div class="t2">Atendimento ${D.dataCurta(a.data)} · <span class="etiqueta ${st.cls}">${st.txt}</span></div></div>
+    ${a.fiado.pagoEm ? '' : `<button class="btn-whats ${cobradoHoje ? 'feito' : ''}">${cobradoHoje ? 'Cobrado' : IC.whats + 'Cobrar'}</button>`}
+  </div>`);
+  l.querySelector('.grow').onclick = () => folhaDetalhe(a);
+  l.querySelector('.btn-whats')?.addEventListener('click', () => enviar('cobranca', a));
+  return l;
+}
+
+function cartaoFiado(a, aoMudar) {
+  const st = situacaoFiado(a);
+  const box = el(`<div class="cartao fiado-cartao">
+    <div class="linha">${IC.fiado}<div class="grow"><div class="t1">Fiado · ${D.dinheiro(a.total)}</div><div class="t2"><span class="etiqueta ${st.cls}">${st.txt}</span>${a.fiado.cobradoEm ? ` · cobrado em ${D.dataCurta(a.fiado.cobradoEm)}` : ''}</div></div></div>
+  </div>`);
+  if (!a.fiado.pagoEm) {
+    const v = el(`<div class="linha"><div class="grow"><div class="t2">Ela vai pagar em</div></div><input class="entrada" type="date" style="width:auto;min-height:40px" value="${a.fiado.vence}"></div>`);
+    v.querySelector('input').onchange = (e) => { if (!e.target.value) return; a.fiado.vence = e.target.value; D.salvarAgendamento(a); aoMudar(); };
+    box.append(v);
+  }
+  const acoes = el('<div class="acoes-cliente" style="padding:0 12px 12px"></div>');
+  if (a.fiado.pagoEm) {
+    const desf = el('<button class="btn-sec">Desfazer recebido</button>');
+    desf.onclick = () => { D.receberFiado(a, true); aoMudar(); };
+    acoes.append(desf);
+  } else {
+    const cob = el(`<button class="btn-sec" style="color:var(--whats)">Cobrar no Whats</button>`);
+    cob.onclick = () => { enviar('cobranca', a); aoMudar(); };
+    const rec = el('<button class="btn-sec">Recebi</button>');
+    rec.onclick = () => { if (!confirm(`Confirmar que recebeu ${D.dinheiro(a.total)}?`)) return; D.receberFiado(a); aoMudar(); avisar('Fiado recebido'); };
+    acoes.append(cob, rec);
+  }
+  box.append(acoes);
+  return box;
+}
+
+function telaFiado(app) {
+  const abertos = D.fiadosEmAberto();
+  const total = abertos.reduce((t, a) => t + (a.total || 0), 0);
+  app.append(topo({ titulo: 'Fiado', sub: abertos.length ? `${D.dinheiro(total)} para receber` : 'Nada em aberto' }));
+  const tela = el('<main class="tela"></main>');
+  const hoje = D.hojeStr();
+  const secao = (titulo, lista, vazio) => {
+    tela.append(el(`<h3 class="secao-titulo">${titulo}</h3>`));
+    const box = el('<div class="cartao"></div>');
+    if (!lista.length) box.append(el(`<div class="vazio">${vazio}</div>`));
+    for (const a of lista) box.append(linhaFiado(a));
+    tela.append(box);
+  };
+  secao('Para cobrar', abertos.filter((a) => a.fiado.vence <= hoje), 'Ninguém para cobrar hoje.');
+  secao('A vencer', abertos.filter((a) => a.fiado.vence > hoje), 'Nenhum fiado a vencer.');
+  const limite = D.somarDias(hoje, -60);
+  const pagos = D.estado.agendamentos.filter((a) => a.fiado?.pagoEm && a.fiado.pagoEm >= limite).sort((a, b) => b.fiado.pagoEm.localeCompare(a.fiado.pagoEm));
+  if (pagos.length) secao('Recebidos nos últimos 60 dias', pagos, '');
+  tela.append(el('<p style="color:var(--texto-2);font-size:14px;margin:12px 4px">Para lançar um fiado, escolha <b>Fiado</b> na forma de pagamento do agendamento e a data em que ela vai pagar. No dia, o lembrete aparece na tela inicial.</p>'));
+  app.append(tela);
+}
+
+// ---------- financeiro ----------
+function navMes(onde) {
+  const { ano, mes } = rota;
+  const nav = el(`<div class="cal-nav cartao" style="padding:6px 4px;margin-bottom:12px">
+    <button class="icone-btn" data-m="-1" aria-label="Mês anterior">${IC.esq}</button>
+    <strong>${D.MESES[mes]} ${ano}</strong>
+    <button class="icone-btn" data-m="1" aria-label="Próximo mês">${IC.dir}</button>
+  </div>`);
+  const mudar = (p) => { const d = new Date(ano, mes + p, 1); ir({ ano: d.getFullYear(), mes: d.getMonth() }); };
+  nav.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => mudar(Number(b.dataset.m))));
+  aoDeslizar(onde, mudar);
+  return nav;
+}
+
+function telaFinanceiro(app) {
+  const { ano, mes } = rota;
+  const r = D.relatorioDoMes(ano, mes);
+  app.append(topo({ titulo: 'Financeiro' }));
+  const tela = el('<main class="tela"></main>');
+  app.append(tela);
+  tela.append(navMes(tela));
+
+  tela.append(el(`<div class="cartao resumo">
+    <div class="resumo-topo"><small>Entradas do mês</small><strong>${D.dinheiro(r.previsto)}</strong><span>${r.atendimentos} atendimento${r.atendimentos === 1 ? '' : 's'} marcado${r.atendimentos === 1 ? '' : 's'} no mês inteiro</span></div>
+    <div class="linha"><i class="pt" style="background:var(--ok)"></i><div class="grow">Já recebido</div><strong>${D.dinheiro(r.recebido)}</strong></div>
+    <div class="linha"><i class="pt" style="background:var(--dourado)"></i><div class="grow">Ainda vai entrar</div><strong>${D.dinheiro(r.aReceber)}</strong></div>
+    <div class="linha"><i class="pt" style="background:var(--perigo)"></i><div class="grow">Fiado em aberto</div><strong>${D.dinheiro(r.fiadoAberto)}</strong></div>
+  </div>`));
+
+  tela.append(el('<h3 class="secao-titulo">Saldo</h3>'));
+  const saldo = el(`<div class="cartao">
+    <div class="linha"><div class="grow">Entradas</div><strong>${D.dinheiro(r.previsto)}</strong></div>
+    ${r.sinaisRetidos ? `<div class="linha"><div class="grow">Sinais que ficaram com você<div class="t2">Faltas e desistências</div></div><strong>${D.dinheiro(r.sinaisRetidos)}</strong></div>` : ''}
+    <button class="linha" data-gastos><div class="grow">Gastos do estúdio<div class="t2">Ver e lançar gastos</div></div><strong style="color:var(--perigo)">− ${D.dinheiro(r.gastos)}</strong><span class="seta">${IC.seta}</span></button>
+    <div class="linha"><div class="grow"><b>Sobra do mês</b></div><strong style="font-size:18px;color:${r.saldo < 0 ? 'var(--perigo)' : 'var(--ok)'}">${D.dinheiro(r.saldo)}</strong></div>
+  </div>`);
+  saldo.querySelector('.seta svg').style.cssText = 'width:18px;height:18px';
+  saldo.querySelector('[data-gastos]').onclick = () => ir({ tela: 'gastos' });
+  tela.append(saldo);
+  if (r.sinaisRecebidos) tela.append(el(`<p style="color:var(--texto-2);font-size:13px;margin:8px 4px 0">Sinais recebidos no mês: ${D.dinheiro(r.sinaisRecebidos)} (ficam como crédito das clientes).</p>`));
+
+  const servicos = [...r.porServico.values()].sort((a, b) => b.valor - a.valor);
+  if (servicos.length) {
+    tela.append(el('<h3 class="secao-titulo">Por serviço</h3>'));
+    const max = servicos[0].valor || 1;
+    const box = el('<div class="cartao barras"></div>');
+    for (const s of servicos) {
+      const c = D.corServico(s.cor ?? 40);
+      box.append(el(`<div class="barra-item"><div class="barra-txt"><span>${esc(s.nome)} <small>×${s.qtd}</small></span><strong>${D.dinheiro(s.valor)}</strong></div><div class="barra"><i style="width:${Math.max(3, (s.valor / max) * 100)}%;background:${c.borda}"></i></div></div>`));
+    }
+    tela.append(box);
+  }
+
+  if (r.porPagamento.size) {
+    tela.append(el('<h3 class="secao-titulo">Por forma de pagamento</h3>'));
+    const box = el('<div class="cartao"></div>');
+    for (const [k, v] of [...r.porPagamento].sort((a, b) => b[1] - a[1])) box.append(el(`<div class="linha"><div class="grow">${D.PAGAMENTOS[k] || k}</div><strong>${D.dinheiro(v)}</strong></div>`));
+    tela.append(box);
+  }
+  if (r.faltas || r.cancelados) tela.append(el(`<p style="color:var(--texto-2);font-size:14px;margin:10px 4px 0">Não entram na conta: ${r.faltas} falta${r.faltas === 1 ? '' : 's'} e ${r.cancelados} cancelamento${r.cancelados === 1 ? '' : 's'}.</p>`));
+
+  tela.append(el('<h3 class="secao-titulo">Todas as entradas do mês</h3>'));
+  const lista = el('<div class="cartao"></div>');
+  if (!r.lista.length) lista.append(el('<div class="vazio">Nenhum atendimento neste mês.</div>'));
+  for (const a of r.lista) {
+    const c = D.clientePorId(a.clienteId);
+    const p = D.pago(a);
+    const et = p ? '<span class="etiqueta ok">Recebido</span>' : a.pagamento === 'fiado' ? '<span class="etiqueta perigo">Fiado</span>' : '<span class="etiqueta">A receber</span>';
+    const l = el(`<button class="linha">${tracoCor(a)}<div class="hora">${D.dataCurta(a.data)}<br>${D.hora(a.inicio)}</div><div class="grow"><div class="t1">${esc(c?.nome || 'Cliente')}</div><div class="t2">${D.dinheiro(a.total)}</div></div>${et}</button>`);
+    l.onclick = () => folhaDetalhe(a);
+    lista.append(l);
+  }
+  tela.append(lista);
+}
+
+// ---------- gastos do estúdio ----------
+function telaGastos(app) {
+  const { ano, mes } = rota;
+  const gastos = D.gastosDoMes(ano, mes);
+  const total = gastos.reduce((t, g) => t + (g.valor || 0), 0);
+  app.append(topo({ titulo: 'Gastos', sub: 'do estúdio' }));
+  const tela = el('<main class="tela"></main>');
+  app.append(tela);
+  tela.append(navMes(tela));
+  const chaveMes = `${ano}-${String(mes + 1).padStart(2, '0')}`;
+
+  const porCat = new Map();
+  for (const g of gastos) porCat.set(g.categoria, (porCat.get(g.categoria) || 0) + g.valor);
+  tela.append(el(`<div class="cartao resumo">
+    <div class="resumo-topo"><small>Gastos do mês</small><strong>${D.dinheiro(total)}</strong><span>${gastos.length} lançamento${gastos.length === 1 ? '' : 's'}</span></div>
+    ${[...porCat].sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="linha"><div class="grow">${esc(k)}</div><strong>${D.dinheiro(v)}</strong></div>`).join('')}
+  </div>`));
+
+  tela.append(el('<h3 class="secao-titulo">Lançamentos</h3>'));
+  const lista = el('<div class="cartao"></div>');
+  if (!gastos.length) lista.append(el('<div class="vazio">Nenhum gasto neste mês. Toque em + para lançar.</div>'));
+  for (const g of gastos) {
+    const l = el(`<button class="linha"><div class="hora">${D.dataCurta(g.dia)}</div><div class="grow"><div class="t1">${esc(g.descricao)}</div><div class="t2">${esc(g.categoria)}${g.fixo ? ' · todo mês' : ''}</div></div><strong>${D.dinheiro(g.valor)}</strong></button>`);
+    l.onclick = () => folhaGasto(D.estado.gastos.find((x) => x.id === g.id), chaveMes);
+    lista.append(l);
+  }
+  tela.append(lista);
+
+  const fab = el(`<button class="fab" aria-label="Novo gasto">${IC.mais}</button>`);
+  const hoje = D.hojeStr();
+  fab.onclick = () => folhaGasto(null, chaveMes, hoje.startsWith(chaveMes) ? hoje : `${chaveMes}-01`);
+  app.append(fab);
+}
+
+function folhaGasto(g, mesAberto, dataPadrao) {
+  const f = g ? structuredClone(g) : { id: D.uid(), data: dataPadrao, descricao: '', valor: 0, categoria: 'Materiais', fixo: false };
+  const folha = abrirFolha({ titulo: g ? 'Editar gasto' : 'Novo gasto' });
+  folha.corpo.append(el(`<div>
+    <div class="campo"><label>O que foi</label><input class="entrada" data-c="desc" placeholder="Ex.: gel, tips, aluguel" value="${esc(f.descricao)}"></div>
+    <div class="duas bloco-campos">
+      <div class="campo"><label>Valor (R$)</label><input class="entrada" data-c="valor" inputmode="decimal" value="${f.valor ? String(f.valor).replace('.', ',') : ''}"></div>
+      <div class="campo"><label>${f.fixo ? 'Começa em' : 'Data'}</label><input class="entrada" data-c="data" type="date" value="${f.data}"></div>
+    </div>
+  </div>`));
+  const cat = el('<div class="campo"><span class="rotulo">Tipo</span><div class="fichas"></div></div>');
+  const desenharCat = () => {
+    const box = cat.querySelector('.fichas');
+    box.innerHTML = '';
+    for (const k of D.CATEGORIAS_GASTO) {
+      const b = el(`<button class="ficha ${f.categoria === k ? 'sel' : ''}">${k}</button>`);
+      b.onclick = () => { f.categoria = k; desenharCat(); };
+      box.append(b);
+    }
+  };
+  desenharCat();
+  const rep = el('<div class="campo"><span class="rotulo">Repetir</span><div class="segmento"><button data-v="0">Só uma vez</button><button data-v="1">Todo mês</button></div></div>');
+  rep.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('sel', (b.dataset.v === '1') === !!f.fixo);
+    b.onclick = () => { f.fixo = b.dataset.v === '1'; rep.querySelectorAll('button').forEach((x) => x.classList.toggle('sel', x === b)); };
+  });
+  folha.corpo.append(cat, rep);
+  const q = (k) => folha.corpo.querySelector(`[data-c=${k}]`);
+  const ok = el('<button class="btn-principal">Salvar</button>');
+  ok.onclick = () => {
+    f.descricao = q('desc').value.trim();
+    f.valor = Number(q('valor').value.replace(/\./g, '').replace(',', '.')) || 0;
+    f.data = q('data').value || f.data;
+    if (!f.descricao) { avisar('Escreva o que foi'); return; }
+    if (!(f.valor > 0)) { avisar('Informe o valor'); return; }
+    D.salvarGasto(f);
+    folha.fechar(); render(); avisar('Gasto salvo');
+  };
+  folha.corpo.append(ok);
+  if (g) {
+    if (g.fixo) {
+      const so = el('<button class="btn-texto" style="color:var(--perigo)">Tirar só deste mês</button>');
+      so.onclick = () => { D.excluirGasto(g.id, 'mes', mesAberto); folha.fechar(); render(); };
+      const daqui = el('<button class="btn-texto" style="color:var(--perigo)">Parar de repetir a partir deste mês</button>');
+      daqui.onclick = () => { if (!confirm('Parar de lançar este gasto a partir deste mês? Os meses anteriores continuam.')) return; D.excluirGasto(g.id, 'daqui', mesAberto); folha.fechar(); render(); };
+      folha.corpo.append(so, daqui);
+    } else {
+      const x = el('<button class="btn-texto" style="color:var(--perigo)">Excluir gasto</button>');
+      x.onclick = () => { if (!confirm('Excluir este gasto?')) return; D.excluirGasto(g.id); folha.fechar(); render(); };
+      folha.corpo.append(x);
+    }
+  } else setTimeout(() => q('desc').focus(), 300);
 }
 
 // ---------- ajustes ----------

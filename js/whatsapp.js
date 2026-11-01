@@ -9,6 +9,7 @@ export const VARIAVEIS = {
   '{servicos}': 'serviços',
   '{valor}': 'valor',
   '{sinal}': 'linha do sinal',
+  '{vencimento}': 'vencimento do fiado',
 };
 
 function quando(data) {
@@ -30,6 +31,7 @@ export function montarMensagem(tipo, ag) {
     '{servicos}': ag.servicos.map((x) => x.nome).join(', ') || '—',
     '{valor}': dinheiro(ag.total),
     '{sinal}': linhaSinal,
+    '{vencimento}': ag.fiado?.vence ? dataCurta(ag.fiado.vence) : '',
   };
   let texto = estado.config.mensagens[tipo] || '';
   for (const [k, v] of Object.entries(valores)) texto = texto.split(k).join(v);

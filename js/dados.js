@@ -23,10 +23,13 @@ export const MENSAGENS_PADRAO = {
     'Obrigada ❤️',
   cobranca:
     'Oi {cliente}, tudo bem?\n' +
-    'Passando para lembrar que hoje vence o valor de {valor} do seu atendimento do dia {data}.\n' +
+    'Passando para lembrar do valor de {valor} do seu atendimento do dia {data}, combinado para {vencimento}.\n' +
     'Pode ser por Pix 😉\n\n' +
     'Obrigada ❤️',
 };
+
+// texto de cobrança da v1 (dizia "hoje vence" mesmo depois do vencimento): troca se ela não mexeu nele
+const COBRANCA_V1 = 'Oi {cliente}, tudo bem?\nPassando para lembrar que hoje vence o valor de {valor} do seu atendimento do dia {data}.\nPode ser por Pix 😉\n\nObrigada ❤️';
 
 function estadoNovo() {
   return {
@@ -45,6 +48,7 @@ function estadoNovo() {
     clientes: [],
     agendamentos: [],
     bloqueios: [],
+    gastos: [],
     ultimoBackup: null,
   };
 }
@@ -58,7 +62,13 @@ function carregar() {
       const e = JSON.parse(bruto);
       const base = estadoNovo();
       e.config = { ...base.config, ...e.config, mensagens: { ...base.config.mensagens, ...(e.config?.mensagens || {}) } };
-      for (const k of ['servicos', 'clientes', 'agendamentos', 'bloqueios']) e[k] = e[k] || [];
+      if (e.config.mensagens.cobranca === COBRANCA_V1) e.config.mensagens.cobranca = MENSAGENS_PADRAO.cobranca;
+      for (const k of ['servicos', 'clientes', 'agendamentos', 'bloqueios', 'gastos']) e[k] = e[k] || [];
+      // serviços de antes das cores ganham uma cor e ela fica gravada
+      const usadas = e.servicos.map((s) => s.cor).filter((h) => h != null);
+      let mudou = false;
+      for (const s of e.servicos) if (s.cor == null) { s.cor = novaCor(usadas); usadas.push(s.cor); mudou = true; }
+      if (mudou) localStorage.setItem(CHAVE, JSON.stringify(e));
       return e;
     }
   } catch (err) {
@@ -106,6 +116,31 @@ export function duracaoTexto(min) {
 }
 
 export const dinheiro = (v) => (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+// ---------- cores dos serviços ----------
+// A cor é só o matiz (0–359); fundo claro e texto escuro do mesmo tom garantem leitura em qualquer cor.
+export const corServico = (h) => ({ fundo: `hsl(${h} 68% 87%)`, borda: `hsl(${h} 52% 42%)`, texto: `hsl(${h} 60% 19%)` });
+
+// declarada como function (e não const) porque carregar() a usa antes desta linha rodar
+function distanciaCor(a, b) { const x = Math.abs(a - b) % 360; return Math.min(x, 360 - x); }
+
+// sorteia uma cor, preferindo a mais diferente das que já estão em uso
+export function novaCor(usadas = estado.servicos.map((s) => s.cor).filter((h) => h != null)) {
+  let melhor = 0, dist = -1;
+  for (let i = 0; i < 24; i++) {
+    const h = Math.floor(Math.random() * 360);
+    const d = usadas.length ? Math.min(...usadas.map((u) => distanciaCor(u, h))) : 360;
+    if (d > dist) { dist = d; melhor = h; }
+  }
+  return melhor;
+}
+
+// cor de um agendamento = cor do primeiro serviço (a atual do cadastro; se o serviço foi apagado, a guardada nele)
+export function corDoAgendamento(a) {
+  const s = a.servicos?.[0];
+  if (!s) return null;
+  return estado.servicos.find((x) => x.id === s.id)?.cor ?? s.cor ?? null;
+}
 
 // ---------- clientes ----------
 export const soDigitos = (t) => String(t || '').replace(/\D/g, '');
@@ -194,6 +229,9 @@ export const PAGAMENTOS = {
 };
 
 export function salvarAgendamento(ag) {
+  // fiado: guarda o vencimento e se já foi pago; trocar a forma de pagamento apaga isso
+  if (ag.pagamento === 'fiado') ag.fiado = { vence: ag.fiado?.vence || somarDias(ag.data, 30), pagoEm: ag.fiado?.pagoEm || null, cobradoEm: ag.fiado?.cobradoEm || null };
+  else delete ag.fiado;
   const i = estado.agendamentos.findIndex((a) => a.id === ag.id);
   if (i >= 0) estado.agendamentos[i] = ag; else estado.agendamentos.push(ag);
 
@@ -226,11 +264,100 @@ export function resumoDoMes(ano, mes) {
   return mapa;
 }
 
-// Pagamento sai do "a receber" sozinho quando o horário passa (menos fiado).
+// Pagamento sai do "a receber" sozinho quando o horário passa (fiado só quando ela marca que recebeu).
 export function pago(ag) {
-  if (ag.pagamento === 'fiado' || ['cancelado', 'faltou'].includes(ag.status)) return false;
+  if (['cancelado', 'faltou'].includes(ag.status)) return false;
+  if (ag.pagamento === 'fiado') return !!ag.fiado?.pagoEm;
   const hoje = hojeStr();
   return ag.data < hoje || (ag.data === hoje && ag.inicio + ag.duracao <= agoraMin());
+}
+
+// ---------- fiado ----------
+export const fiadosEmAberto = () => estado.agendamentos
+  .filter((a) => a.pagamento === 'fiado' && !a.fiado?.pagoEm && !['cancelado', 'faltou'].includes(a.status))
+  .sort((a, b) => (a.fiado?.vence || '').localeCompare(b.fiado?.vence || ''));
+
+export const fiadosParaCobrar = () => fiadosEmAberto().filter((a) => a.fiado?.vence && a.fiado.vence <= hojeStr());
+
+export function receberFiado(ag, desfazer = false) {
+  if (!ag.fiado) return;
+  ag.fiado.pagoEm = desfazer ? null : hojeStr();
+  salvar();
+}
+
+// ---------- gastos do estúdio ----------
+export const CATEGORIAS_GASTO = ['Materiais', 'Aluguel', 'Contas', 'Equipamentos', 'Cursos', 'Divulgação', 'Outros'];
+
+const mesDe = (s) => s.slice(0, 7);
+
+// gasto fixo aparece todo mês no mesmo dia, do mês em que foi lançado até o mês "ate" (exclusive)
+export function gastosDoMes(ano, mes) {
+  const m = `${ano}-${dois(mes + 1)}`;
+  const ultimoDia = new Date(ano, mes + 1, 0).getDate();
+  const lista = [];
+  for (const g of estado.gastos) {
+    if (!g.fixo) { if (mesDe(g.data) === m) lista.push({ ...g, dia: g.data }); continue; }
+    if (m < mesDe(g.data) || (g.ate && m >= g.ate) || (g.excecoes || []).includes(m)) continue;
+    const d = Math.min(Number(g.data.slice(8)), ultimoDia);
+    lista.push({ ...g, dia: `${m}-${dois(d)}` });
+  }
+  return lista.sort((a, b) => b.dia.localeCompare(a.dia));
+}
+
+export function salvarGasto(g) {
+  const i = estado.gastos.findIndex((x) => x.id === g.id);
+  if (i >= 0) estado.gastos[i] = g; else estado.gastos.push(g);
+  salvar();
+}
+
+// modo: 'tudo' apaga; 'mes' tira só aquele mês; 'daqui' para de repetir a partir daquele mês
+export function excluirGasto(id, modo = 'tudo', mes) {
+  const g = estado.gastos.find((x) => x.id === id);
+  if (!g) return;
+  if (g.fixo && modo === 'mes') (g.excecoes = g.excecoes || []).push(mes);
+  else if (g.fixo && modo === 'daqui' && mes > mesDe(g.data)) g.ate = mes;
+  else estado.gastos = estado.gastos.filter((x) => x.id !== id);
+  salvar();
+}
+
+// ---------- relatório do mês ----------
+export function relatorioDoMes(ano, mes) {
+  const pref = `${ano}-${dois(mes + 1)}`;
+  const doMes = estado.agendamentos.filter((a) => a.data.startsWith(pref)).sort((a, b) => a.data.localeCompare(b.data) || a.inicio - b.inicio);
+  const validos = doMes.filter((a) => !['cancelado', 'faltou'].includes(a.status));
+  const r = {
+    lista: validos,
+    previsto: 0, recebido: 0, aReceber: 0, fiadoAberto: 0,
+    atendimentos: validos.length,
+    faltas: doMes.filter((a) => a.status === 'faltou').length,
+    cancelados: doMes.filter((a) => a.status === 'cancelado').length,
+    porServico: new Map(), porPagamento: new Map(),
+    sinaisRecebidos: 0, sinaisRetidos: 0,
+  };
+  for (const a of validos) {
+    const v = a.total || 0;
+    r.previsto += v;
+    if (pago(a)) r.recebido += v;
+    else if (a.pagamento === 'fiado') r.fiadoAberto += v;
+    else r.aReceber += v;
+    r.porPagamento.set(a.pagamento, (r.porPagamento.get(a.pagamento) || 0) + v);
+    // o total pode ter sido ajustado à mão: divide entre os serviços na proporção dos preços
+    const soma = a.servicos.reduce((t, s) => t + (s.valor || 0), 0);
+    for (const s of a.servicos) {
+      const parte = soma ? v * (s.valor || 0) / soma : v / a.servicos.length;
+      const atual = r.porServico.get(s.id) || { nome: s.nome, cor: estado.servicos.find((x) => x.id === s.id)?.cor ?? s.cor, qtd: 0, valor: 0 };
+      atual.qtd++; atual.valor += parte;
+      r.porServico.set(s.id, atual);
+    }
+  }
+  for (const c of estado.clientes) for (const m of c.sinais || []) {
+    if (!m.data?.startsWith(pref)) continue;
+    if (m.tipo === 'recebido') r.sinaisRecebidos += m.valor;
+    if (m.tipo === 'retido') r.sinaisRetidos += m.valor;
+  }
+  r.gastos = gastosDoMes(ano, mes).reduce((t, g) => t + (g.valor || 0), 0);
+  r.saldo = r.previsto + r.sinaisRetidos - r.gastos;
+  return r;
 }
 
 // ---------- bloqueios ----------
